@@ -104,6 +104,34 @@ export default function HomePage() {
             hasActiveFilters={hasActiveFilters}
             onClearFilters={handleClearFilters}
           />
+
+          {medicineData?.total > (medicineData?.page_size || 12) && (
+            <div className="flex justify-center items-center gap-4 mt-8">
+              <Button
+                variant="secondary"
+                disabled={filters.page === 1 || medicinesLoading}
+                onClick={() => {
+                  setFilters(f => ({ ...f, page: f.page - 1 }));
+                  window.scrollTo({ top: document.getElementById('medicine-grid')?.offsetTop - 100, behavior: 'smooth' });
+                }}
+              >
+                Previous
+              </Button>
+              <span className="text-sm font-bold text-slate-500">
+                Page {filters.page} of {Math.ceil(medicineData.total / (medicineData.page_size || 12))}
+              </span>
+              <Button
+                variant="secondary"
+                disabled={filters.page === Math.ceil(medicineData.total / (medicineData.page_size || 12)) || medicinesLoading}
+                onClick={() => {
+                  setFilters(f => ({ ...f, page: f.page + 1 }));
+                  window.scrollTo({ top: document.getElementById('medicine-grid')?.offsetTop - 100, behavior: 'smooth' });
+                }}
+              >
+                Next
+              </Button>
+            </div>
+          )}
         </div>
         
         <PrescriptionBanner />
