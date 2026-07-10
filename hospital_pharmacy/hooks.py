@@ -140,6 +140,18 @@ app_license = "mit"
 doc_events = {
 	"Bin": {
 		"on_update": "hospital_pharmacy.hospital_pharmacy.doctype.medicine.medicine.on_bin_update"
+	},
+	"Sales Invoice": {
+		"before_submit": "hospital_pharmacy.api.validate_batch_expiry"
+	},
+	"Delivery Note": {
+		"before_submit": "hospital_pharmacy.api.validate_batch_expiry"
+	},
+	"Item": {
+		"on_update": "hospital_pharmacy.api.sync_item_to_medicine"
+	},
+	"Item Price": {
+		"on_update": "hospital_pharmacy.api.sync_item_price_to_medicine"
 	}
 }
 

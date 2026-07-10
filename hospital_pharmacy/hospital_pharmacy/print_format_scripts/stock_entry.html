@@ -1,0 +1,203 @@
+{% set company_info = frappe.get_doc("Company", doc.company) %}
+
+<style>
+    .pharmacy-invoice {
+        font-family: 'Helvetica Neue', Helvetica, Arial, 'sans-serif';
+        font-size: 10pt;
+        color: #333;
+        line-height: 1.4;
+    }
+    .pharmacy-invoice h1, .pharmacy-invoice h2, .pharmacy-invoice h3 {
+        color: #1a56db;
+        margin: 0;
+    }
+    .invoice-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        border-bottom: 2px solid #e5e7eb;
+        padding-bottom: 20px;
+        margin-bottom: 20px;
+    }
+    .hospital-details {
+        max-width: 50%;
+    }
+    .hospital-logo img {
+        max-width: 150px;
+        max-height: 60px;
+        margin-bottom: 10px;
+    }
+    .invoice-details {
+        text-align: right;
+    }
+    .invoice-details .invoice-title {
+        font-size: 24pt;
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        margin-bottom: 10px;
+    }
+    .meta-table {
+        width: 100%;
+        margin-bottom: 20px;
+    }
+    .meta-table td {
+        vertical-align: top;
+        width: 50%;
+    }
+    .bill-to-box {
+        background-color: #f9fafb;
+        border-radius: 8px;
+        padding: 15px;
+        border: 1px solid #f3f4f6;
+    }
+    .items-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 40px;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .items-table th {
+        background-color: #1a56db;
+        color: white;
+        text-align: left;
+        padding: 10px;
+        font-size: 9pt;
+        text-transform: uppercase;
+    }
+    .items-table td {
+        border-bottom: 1px solid #e5e7eb;
+        padding: 10px;
+        vertical-align: top;
+    }
+    .items-table tr:nth-child(even) {
+        background-color: #f9fafb;
+    }
+    .text-right {
+        text-align: right !important;
+    }
+    .footer {
+        margin-top: 60px;
+        padding-top: 40px;
+        display: flex;
+        justify-content: flex-end;
+    }
+    .signature-box {
+        width: 40%;
+        text-align: center;
+    }
+    .signature-line {
+        border-bottom: 1px solid #333;
+        height: 50px;
+        margin-bottom: 10px;
+    }
+    .medicine-meta {
+        font-size: 8pt;
+        color: #6b7280;
+        margin-top: 4px;
+    }
+</style>
+
+<div class="pharmacy-invoice">
+    <!-- Header -->
+    <div class="invoice-header">
+        <div class="hospital-details">
+            {% if company_info.company_logo %}
+                <div class="hospital-logo">
+                    <img src="{{ company_info.company_logo }}" alt="{{ doc.company }}">
+                </div>
+            {% else %}
+                <h2>{{ doc.company }}</h2>
+            {% endif %}
+            
+            <div style="margin-top: 10px;">
+                <strong>Phone:</strong> {{ company_info.phone_no or "+1 234 567 8900" }}<br>
+                <strong>Email:</strong> {{ company_info.email or "pharmacy@abchospital.com" }}
+            </div>
+        </div>
+        
+        <div class="invoice-details">
+            <div class="invoice-title">{{ doc.stock_entry_type }}</div>
+            <div><strong>Entry No:</strong> {{ doc.name }}</div>
+            <div><strong>Date:</strong> {{ frappe.utils.formatdate(doc.posting_date) }} {{ doc.posting_time }}</div>
+        </div>
+    </div>
+
+    <!-- Info -->
+    <table class="meta-table">
+        <tr>
+            <td style="padding-right: 10px;">
+                <div class="bill-to-box">
+                    <h3 style="margin-bottom: 10px; font-size: 11pt;">Transfer Details</h3>
+                    <strong>Purpose:</strong> {{ doc.stock_entry_type }}<br>
+                    {% if doc.from_warehouse %}
+                        <strong>Source:</strong> {{ doc.from_warehouse }}<br>
+                    {% endif %}
+                    {% if doc.to_warehouse %}
+                        <strong>Destination:</strong> {{ doc.to_warehouse }}<br>
+                    {% endif %}
+                </div>
+            </td>
+            <td style="padding-left: 10px;">
+                <div class="bill-to-box">
+                    <h3 style="margin-bottom: 10px; font-size: 11pt;">Reference</h3>
+                    <strong>Status:</strong> {{ doc.docstatus == 1 and "Submitted" or "Draft" }}<br>
+                    <strong>Created By:</strong> {{ frappe.get_doc("User", doc.owner).full_name }}<br>
+                </div>
+            </td>
+        </tr>
+    </table>
+
+    <!-- Items -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Item Details</th>
+                <th>Warehouse (From &rarr; To)</th>
+                <th>Batch / Expiry</th>
+                <th class="text-right">Transfer Qty</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in doc.items %}
+                {% set generic_name = frappe.db.get_value("Medicine", {"item": row.item_code}, "generic_name") %}
+                {% set expiry_date = frappe.db.get_value("Batch", row.batch_no, "expiry_date") if row.batch_no else None %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>
+                        <strong>{{ row.item_name }}</strong>
+                        {% if generic_name %}
+                            <div class="medicine-meta">Generic: {{ generic_name }}</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if row.s_warehouse %}<div class="medicine-meta" style="color: #9b1c1c;">From: {{ row.s_warehouse }}</div>{% endif %}
+                        {% if row.t_warehouse %}<div class="medicine-meta" style="color: #03543f;">To: {{ row.t_warehouse }}</div>{% endif %}
+                    </td>
+                    <td>
+                        {% if row.batch_no %}
+                            {{ row.batch_no }}
+                            {% if expiry_date %}
+                                <div class="medicine-meta">Exp: {{ frappe.utils.formatdate(expiry_date) }}</div>
+                            {% endif %}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td class="text-right font-bold">{{ row.qty }} {{ row.uom }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- Footer -->
+    <div class="footer">
+        <div class="signature-box">
+            <div class="signature-line"></div>
+            <strong>Authorized Signatory</strong>
+            <div class="medicine-meta">{{ doc.company }}</div>
+        </div>
+    </div>
+</div>

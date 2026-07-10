@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { Modal, Input, Button } from './ui';
 import { useAuthStore } from '../stores/useAuthStore';
+import { useCartStore } from '../stores/useCartStore';
 import { authService, parseFrappeError } from '../services';
+import { useNavigate } from 'react-router-dom';
 import { X, ShieldCheck } from 'lucide-react';
 
 const TABS = ['login', 'register'];
@@ -11,6 +13,7 @@ export default function AuthModal({ isOpen, onClose, onSuccess, defaultTab = 'lo
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const { login } = useAuthStore();
+  const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -22,8 +25,6 @@ export default function AuthModal({ isOpen, onClose, onSuccess, defaultTab = 'lo
       if (tab === 'login') {
         const res = await authService.customerLogin(f.email.value, f.password.value);
         login(res.user, res.full_name, false);
-        onClose();
-        onSuccess?.();
       } else {
         if (f.password.value !== f.confirm.value) {
           setError('Passwords do not match.');
@@ -33,8 +34,21 @@ export default function AuthModal({ isOpen, onClose, onSuccess, defaultTab = 'lo
         await authService.register(f.full_name.value, f.email.value, f.phone.value, f.password.value);
         const res = await authService.customerLogin(f.email.value, f.password.value);
         login(res.user, res.full_name, false);
-        onClose();
-        onSuccess?.();
+      }
+      
+      onClose();
+      onSuccess?.();
+      
+      const { pendingAction, clearPendingAction } = useAuthStore.getState();
+      if (pendingAction) {
+        if (pendingAction.type === 'buy_now') {
+          useCartStore.getState().addItem(pendingAction.payload);
+          navigate('/cart');
+        } else if (pendingAction.type === 'add_to_cart') {
+          useCartStore.getState().addItem(pendingAction.payload);
+          import('react-hot-toast').then(({ toast }) => toast.success(`${pendingAction.payload.medicine_name} added to cart!`));
+        }
+        clearPendingAction();
       }
     } catch (err) {
       setError(parseFrappeError(err));

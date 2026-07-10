@@ -1,0 +1,227 @@
+{% set company_info = frappe.get_doc("Company", doc.company) %}
+
+<style>
+    .pharmacy-invoice {
+        font-family: 'Helvetica Neue', Helvetica, Arial, 'sans-serif';
+        font-size: 10pt;
+        color: #333;
+        line-height: 1.4;
+    }
+    .pharmacy-invoice h1, .pharmacy-invoice h2, .pharmacy-invoice h3 {
+        color: #1a56db;
+        margin: 0;
+    }
+    .invoice-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        border-bottom: 2px solid #e5e7eb;
+        padding-bottom: 20px;
+        margin-bottom: 20px;
+    }
+    .hospital-details {
+        max-width: 50%;
+    }
+    .hospital-logo img {
+        max-width: 150px;
+        max-height: 60px;
+        margin-bottom: 10px;
+    }
+    .invoice-details {
+        text-align: right;
+    }
+    .invoice-details .invoice-title {
+        font-size: 24pt;
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        margin-bottom: 10px;
+    }
+    .meta-table {
+        width: 100%;
+        margin-bottom: 20px;
+    }
+    .meta-table td {
+        vertical-align: top;
+        width: 50%;
+    }
+    .bill-to-box {
+        background-color: #f9fafb;
+        border-radius: 8px;
+        padding: 15px;
+        border: 1px solid #f3f4f6;
+    }
+    .items-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 40px;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .items-table th {
+        background-color: #1a56db;
+        color: white;
+        text-align: left;
+        padding: 10px;
+        font-size: 9pt;
+        text-transform: uppercase;
+    }
+    .items-table td {
+        border-bottom: 1px solid #e5e7eb;
+        padding: 10px;
+        vertical-align: top;
+    }
+    .items-table tr:nth-child(even) {
+        background-color: #f9fafb;
+    }
+    .text-right {
+        text-align: right !important;
+    }
+    .totals-section {
+        display: flex;
+        justify-content: flex-end;
+    }
+    .totals-table {
+        width: 350px;
+        border-collapse: collapse;
+    }
+    .totals-table td {
+        padding: 8px 10px;
+        border-bottom: 1px solid #e5e7eb;
+    }
+    .totals-table .grand-total {
+        font-weight: bold;
+        font-size: 12pt;
+        color: #1a56db;
+        border-bottom: none;
+    }
+    .medicine-meta {
+        font-size: 8pt;
+        color: #6b7280;
+        margin-top: 4px;
+    }
+</style>
+
+<div class="pharmacy-invoice">
+    <!-- Header -->
+    <div class="invoice-header">
+        <div class="hospital-details">
+            {% if company_info.company_logo %}
+                <div class="hospital-logo">
+                    <img src="{{ company_info.company_logo }}" alt="{{ doc.company }}">
+                </div>
+            {% else %}
+                <h2>{{ doc.company }}</h2>
+            {% endif %}
+            
+            {% set address = frappe.get_doc("Address", doc.company_address) if doc.company_address else None %}
+            <div style="margin-top: 10px;">
+                {% if address %}
+                    {{ address.address_line1 }}<br>
+                    {% if address.address_line2 %}{{ address.address_line2 }}<br>{% endif %}
+                    {{ address.city }}, {{ address.state }} {{ address.pincode }}<br>
+                {% else %}
+                    123 Healthcare Avenue<br>Medical District, NY 10001<br>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="invoice-details">
+            <div class="invoice-title">Purchase Order</div>
+            <div><strong>PO No:</strong> {{ doc.name }}</div>
+            <div><strong>Date:</strong> {{ frappe.utils.formatdate(doc.transaction_date) }}</div>
+            <div style="margin-top: 15px;">
+                <strong>Status:</strong> {{ doc.status }}
+            </div>
+        </div>
+    </div>
+
+    <!-- Supplier Info -->
+    <table class="meta-table">
+        <tr>
+            <td style="padding-right: 10px;">
+                <div class="bill-to-box">
+                    <h3 style="margin-bottom: 10px; font-size: 11pt;">Supplier</h3>
+                    <strong>{{ doc.supplier_name }}</strong><br>
+                    {% if doc.address_display %}
+                        {{ doc.address_display }}
+                    {% endif %}
+                    {% if doc.contact_mobile %}
+                        <br><strong>Phone:</strong> {{ doc.contact_mobile }}
+                    {% endif %}
+                </div>
+            </td>
+            <td style="padding-left: 10px;">
+                <div class="bill-to-box">
+                    <h3 style="margin-bottom: 10px; font-size: 11pt;">Order Information</h3>
+                    <strong>Req. Delivery Date:</strong> {{ frappe.utils.formatdate(doc.schedule_date) }}<br>
+                    <strong>Payment Terms:</strong> {{ doc.payment_terms_template or "Standard" }}<br>
+                    <strong>Delivery Address:</strong><br>
+                    {% if doc.shipping_address_display %}
+                        {{ doc.shipping_address_display }}
+                    {% else %}
+                        Default Company Address
+                    {% endif %}
+                </div>
+            </td>
+        </tr>
+    </table>
+
+    <!-- Items -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Item Details</th>
+                <th class="text-right">Req. Qty</th>
+                <th class="text-right">Rate</th>
+                <th class="text-right">Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in doc.items %}
+                {% set generic_name = frappe.db.get_value("Medicine", {"item": row.item_code}, "generic_name") %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>
+                        <strong>{{ row.item_name }}</strong>
+                        {% if generic_name %}
+                            <div class="medicine-meta">Generic: {{ generic_name }}</div>
+                        {% endif %}
+                        {% if row.item_tax_template %}
+                            <div class="medicine-meta">Tax: {{ row.item_tax_template }}</div>
+                        {% endif %}
+                    </td>
+                    <td class="text-right font-bold">{{ row.qty }} {{ row.uom }}</td>
+                    <td class="text-right">{{ doc.currency }} {{ frappe.utils.fmt_money(row.rate) }}</td>
+                    <td class="text-right">{{ doc.currency }} {{ frappe.utils.fmt_money(row.amount) }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- Totals -->
+    <div class="totals-section">
+        <table class="totals-table">
+            <tr>
+                <td>Sub Total</td>
+                <td class="text-right">{{ doc.currency }} {{ frappe.utils.fmt_money(doc.net_total) }}</td>
+            </tr>
+            {% for tax in doc.taxes %}
+                <tr>
+                    <td>{{ tax.description }}</td>
+                    <td class="text-right">{{ doc.currency }} {{ frappe.utils.fmt_money(tax.tax_amount) }}</td>
+                </tr>
+            {% endfor %}
+            <tr class="grand-total">
+                <td>Grand Total</td>
+                <td class="text-right">{{ doc.currency }} {{ frappe.utils.fmt_money(doc.grand_total) }}</td>
+            </tr>
+        </table>
+    </div>
+    
+    <div style="margin-top: 40px; border-top: 1px solid #e5e7eb; padding-top: 20px;">
+        <strong>Terms and Conditions</strong>
+        <p style="font-size: 9pt; color: #6b7280;">{{ doc.terms or "Standard purchase terms apply. Please supply items as per the delivery schedule." }}</p>
+    </div>
+</div>

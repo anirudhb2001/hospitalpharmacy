@@ -1,0 +1,197 @@
+{% set company_info = frappe.get_doc("Company", doc.company) %}
+
+<style>
+    .pharmacy-invoice {
+        font-family: 'Helvetica Neue', Helvetica, Arial, 'sans-serif';
+        font-size: 10pt;
+        color: #333;
+        line-height: 1.4;
+    }
+    .pharmacy-invoice h1, .pharmacy-invoice h2, .pharmacy-invoice h3 {
+        color: #1a56db;
+        margin: 0;
+    }
+    .invoice-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        border-bottom: 2px solid #e5e7eb;
+        padding-bottom: 20px;
+        margin-bottom: 20px;
+    }
+    .hospital-details {
+        max-width: 50%;
+    }
+    .hospital-logo img {
+        max-width: 150px;
+        max-height: 60px;
+        margin-bottom: 10px;
+    }
+    .invoice-details {
+        text-align: right;
+    }
+    .invoice-details .invoice-title {
+        font-size: 24pt;
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        margin-bottom: 10px;
+    }
+    .meta-table {
+        width: 100%;
+        margin-bottom: 20px;
+    }
+    .meta-table td {
+        vertical-align: top;
+        width: 50%;
+    }
+    .bill-to-box {
+        background-color: #f9fafb;
+        border-radius: 8px;
+        padding: 15px;
+        border: 1px solid #f3f4f6;
+    }
+    .items-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 40px;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    .items-table th {
+        background-color: #1a56db;
+        color: white;
+        text-align: left;
+        padding: 10px;
+        font-size: 9pt;
+        text-transform: uppercase;
+    }
+    .items-table td {
+        border-bottom: 1px solid #e5e7eb;
+        padding: 10px;
+        vertical-align: top;
+    }
+    .items-table tr:nth-child(even) {
+        background-color: #f9fafb;
+    }
+    .text-right {
+        text-align: right !important;
+    }
+    .amount-large {
+        font-size: 24pt;
+        font-weight: bold;
+        color: #1a56db;
+        margin: 20px 0;
+    }
+    .amount-in-words {
+        font-style: italic;
+        color: #6b7280;
+    }
+    .footer {
+        margin-top: 60px;
+        padding-top: 40px;
+        display: flex;
+        justify-content: flex-end;
+    }
+    .signature-box {
+        width: 40%;
+        text-align: center;
+    }
+    .signature-line {
+        border-bottom: 1px solid #333;
+        height: 50px;
+        margin-bottom: 10px;
+    }
+</style>
+
+<div class="pharmacy-invoice">
+    <!-- Header -->
+    <div class="invoice-header">
+        <div class="hospital-details">
+            {% if company_info.company_logo %}
+                <div class="hospital-logo">
+                    <img src="{{ company_info.company_logo }}" alt="{{ doc.company }}">
+                </div>
+            {% else %}
+                <h2>{{ doc.company }}</h2>
+            {% endif %}
+            
+            <div style="margin-top: 10px;">
+                <strong>Phone:</strong> {{ company_info.phone_no or "+1 234 567 8900" }}<br>
+                <strong>Email:</strong> {{ company_info.email or "pharmacy@abchospital.com" }}
+            </div>
+        </div>
+        
+        <div class="invoice-details">
+            <div class="invoice-title">Payment Receipt</div>
+            <div><strong>Receipt No:</strong> {{ doc.name }}</div>
+            <div><strong>Date:</strong> {{ frappe.utils.formatdate(doc.posting_date) }}</div>
+        </div>
+    </div>
+
+    <!-- Payment Info -->
+    <table class="meta-table">
+        <tr>
+            <td style="padding-right: 10px;">
+                <div class="bill-to-box">
+                    <h3 style="margin-bottom: 10px; font-size: 11pt;">Received From</h3>
+                    <strong>{{ doc.party_name }}</strong><br>
+                    <div>Type: {{ doc.party_type }}</div>
+                </div>
+                
+                <div class="amount-large">
+                    {{ doc.paid_to_account_currency }} {{ frappe.utils.fmt_money(doc.paid_amount) }}
+                </div>
+                <div class="amount-in-words">
+                    Amount in words: {{ frappe.utils.money_in_words(doc.paid_amount, doc.paid_to_account_currency) }}
+                </div>
+            </td>
+            <td style="padding-left: 10px;">
+                <div class="bill-to-box">
+                    <h3 style="margin-bottom: 10px; font-size: 11pt;">Payment Details</h3>
+                    <strong>Mode of Payment:</strong> {{ doc.mode_of_payment }}<br>
+                    {% if doc.reference_no %}
+                        <strong>Reference No:</strong> {{ doc.reference_no }}<br>
+                        <strong>Reference Date:</strong> {{ frappe.utils.formatdate(doc.reference_date) }}<br>
+                    {% endif %}
+                </div>
+            </td>
+        </tr>
+    </table>
+
+    <!-- Allocation -->
+    {% if doc.references %}
+    <h3 style="margin-bottom: 10px; font-size: 11pt;">Allocated Against</h3>
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th>Reference Type</th>
+                <th>Reference Name</th>
+                <th class="text-right">Total Amount</th>
+                <th class="text-right">Allocated Amount</th>
+                <th class="text-right">Outstanding Amount</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in doc.references %}
+                <tr>
+                    <td>{{ row.reference_doctype }}</td>
+                    <td>{{ row.reference_name }}</td>
+                    <td class="text-right">{{ doc.paid_to_account_currency }} {{ frappe.utils.fmt_money(row.total_amount) }}</td>
+                    <td class="text-right">{{ doc.paid_to_account_currency }} {{ frappe.utils.fmt_money(row.allocated_amount) }}</td>
+                    <td class="text-right">{{ doc.paid_to_account_currency }} {{ frappe.utils.fmt_money(row.outstanding_amount) }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <!-- Footer -->
+    <div class="footer">
+        <div class="signature-box">
+            <div class="signature-line"></div>
+            <strong>Cashier / Authorized Signatory</strong>
+            <div class="medicine-meta">For {{ doc.company }}</div>
+        </div>
+    </div>
+</div>

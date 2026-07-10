@@ -10,8 +10,10 @@ import AuthModal from './components/AuthModal';
 import CartPage from './pages/portal/CartPage';
 import CheckoutPage from './pages/portal/CheckoutPage';
 import MyOrdersPage from './pages/portal/MyOrdersPage';
+import ProfilePage from './pages/portal/ProfilePage';
 import AdminNotifications from './pages/admin/AdminNotifications';
 import { useCartStore } from './stores/useCartStore';
+import { fetchCartFromServer } from './stores/syncCart';
 import { adminService } from './services';
 import { Navbar } from './components/layout/Navbar';
 import { Footer } from './components/layout/Footer';
@@ -26,6 +28,17 @@ const AdminRoute = ({ children }) => {
 // ─── Portal Layout (customer-facing) ─────────────────────────
 const PortalLayout = () => {
   const [showAuthModal, setShowAuthModal] = React.useState(false);
+  const { isAuthenticated } = useAuthStore();
+
+  React.useEffect(() => {
+    if (isAuthenticated) {
+      fetchCartFromServer();
+    }
+    
+    const handleOpenAuth = () => setShowAuthModal(true);
+    window.addEventListener('open-auth-modal', handleOpenAuth);
+    return () => window.removeEventListener('open-auth-modal', handleOpenAuth);
+  }, [isAuthenticated]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 font-sans selection:bg-blue-200">
@@ -189,6 +202,7 @@ export default function App() {
           <Route path="cart" element={<CartPage />} />
           <Route path="checkout" element={<CheckoutPage />} />
           <Route path="orders" element={<MyOrdersPage />} />
+          <Route path="profile" element={<ProfilePage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
 

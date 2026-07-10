@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { ShieldCheck, UserCog, Users, ArrowLeft } from 'lucide-react';
 import { useAuthStore } from '../../stores/useAuthStore';
+import { fetchCartFromServer } from '../../stores/syncCart';
 import { api } from '../../api';
 import { Card, Input, Button } from '../../components/ui';
 
@@ -33,6 +34,7 @@ export default function LoginPage() {
         const res = await api.post('/api/method/hospital_pharmacy.api.customer_login', { email: data.email, password: data.password });
         if(res.data.message.status === 'success') {
           login(res.data.message.user, res.data.message.full_name, false);
+          await fetchCartFromServer();
           navigate('/');
         }
       } else if (activeTab === 'staff') {
@@ -130,7 +132,7 @@ export default function LoginPage() {
               </>
             )}
             
-            <Input name="email" type="text" placeholder="Administrator or you@email.com" label="Email Address or Username" required />
+            <Input name="email" type={activeTab === 'staff' ? 'text' : 'email'} placeholder={activeTab === 'staff' ? 'enter username or email' : 'enter email'} label={activeTab === 'staff' ? 'Username / Email' : 'Email Address'} required />
             <Input name="password" type="password" placeholder="••••••••" label="Password" required minLength={6} />
             
             {activeTab === 'register' && (

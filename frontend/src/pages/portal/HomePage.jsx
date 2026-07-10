@@ -14,7 +14,7 @@ import { PrescriptionBanner, ServicesSection, Testimonials } from '../../compone
 import { Modal, Button, PriceTag, Rating, StatusBadge } from '../../components/ui';
 
 export default function HomePage() {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, setPendingAction } = useAuthStore();
   const { addItem } = useCartStore();
   const navigate = useNavigate();
   
@@ -47,11 +47,21 @@ export default function HomePage() {
   const medicines = medicineData?.medicines || [];
 
   const handleBuyNow = (medicine) => {
+    if (!isAuthenticated) {
+      setPendingAction({ type: 'buy_now', payload: medicine });
+      window.dispatchEvent(new CustomEvent('open-auth-modal'));
+      return;
+    }
     addItem(medicine);
     navigate('/cart');
   };
 
   const handleAddToCart = (medicine) => {
+    if (!isAuthenticated) {
+      setPendingAction({ type: 'add_to_cart', payload: medicine });
+      window.dispatchEvent(new CustomEvent('open-auth-modal'));
+      return;
+    }
     addItem(medicine);
     import('react-hot-toast').then(({ toast }) => toast.success(`${medicine.medicine_name} added to cart!`));
   };
@@ -154,6 +164,7 @@ export default function HomePage() {
                 <StatusBadge status={selectedMedicine.actual_qty > 0 ? 'In Stock' : 'Out of Stock'} className="mb-3 inline-flex" />
                 <h2 className="text-2xl font-black text-slate-900 leading-tight mb-2">{selectedMedicine.medicine_name}</h2>
                 <p className="text-slate-500 font-medium">{selectedMedicine.generic_name || selectedMedicine.category}</p>
+                <p className="text-slate-500 font-medium">{selectedMedicine.brand || selectedMedicine.category}</p>
               </div>
               
               <div className="flex items-center gap-4 mb-6">

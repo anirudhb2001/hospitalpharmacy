@@ -11,6 +11,8 @@ class Medicine(Document):
 		self.validate_expiry()
 		
 	def on_update(self):
+		if frappe.flags.in_item_sync:
+			return
 		self.sync_with_item()
 
 	def validate_prices(self):
@@ -45,7 +47,7 @@ class Medicine(Document):
 			item.item_group = "Medicine"
 			item.has_batch_no = 1
 			item.has_expiry_date = 1
-			item.create_new_batch = 0
+			item.create_new_batch = 1
 			item.valuation_rate = self.purchase_price
 			item.standard_rate = self.selling_price
 			item.description = self.description
@@ -54,10 +56,14 @@ class Medicine(Document):
 			item.flags.ignore_permissions = True
 			item.flags.ignore_mandatory = True
 			
-			if is_new:
-				item.insert()
-			else:
-				item.save()
+			frappe.flags.in_medicine_sync = True
+			try:
+				if is_new:
+					item.insert()
+				else:
+					item.save()
+			finally:
+				frappe.flags.in_medicine_sync = False
 
 			# Link back to medicine if not linked yet
 			if self.item != item.name:

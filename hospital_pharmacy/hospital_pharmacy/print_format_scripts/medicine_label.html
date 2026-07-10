@@ -1,0 +1,99 @@
+<style>
+    @page {
+        margin: 0;
+        size: 50mm 25mm; /* Standard label size */
+    }
+    body {
+        margin: 0;
+        padding: 0;
+        background: #fff;
+    }
+    .medicine-label {
+        font-family: 'Helvetica Neue', Helvetica, Arial, 'sans-serif';
+        width: 48mm;
+        height: 23mm;
+        padding: 1mm;
+        box-sizing: border-box;
+        overflow: hidden;
+        position: relative;
+    }
+    .medicine-title {
+        font-weight: bold;
+        font-size: 8pt;
+        line-height: 1.1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .generic-name {
+        font-size: 6pt;
+        color: #555;
+        line-height: 1;
+        margin-bottom: 1mm;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .details-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 6pt;
+        line-height: 1.1;
+    }
+    .details-col {
+        width: 65%;
+    }
+    .qr-col {
+        width: 35%;
+        text-align: right;
+    }
+    .qr-col img {
+        width: 12mm;
+        height: 12mm;
+    }
+    .barcode-container {
+        text-align: center;
+        margin-top: 1mm;
+    }
+    .barcode-container img {
+        height: 5mm;
+        max-width: 100%;
+    }
+    .mrp {
+        font-weight: bold;
+    }
+</style>
+
+<div class="medicine-label">
+    {% set generic_name = frappe.db.get_value("Medicine", {"item": doc.item}, "generic_name") %}
+    {% set mrp = frappe.db.get_value("Medicine", {"item": doc.item}, "mrp") %}
+    {% set batch_doc = frappe.get_doc("Batch", doc.name) if doc.doctype == "Batch" else None %}
+    
+    <div class="medicine-title">
+        {{ doc.item_name }}
+    </div>
+    {% if generic_name %}
+        <div class="generic-name">({{ generic_name }})</div>
+    {% endif %}
+    
+    <div class="details-row">
+        <div class="details-col">
+            <div>B.No: <strong>{{ doc.name if doc.doctype == "Batch" else "N/A" }}</strong></div>
+            <div>Exp: <strong>{{ frappe.utils.formatdate(doc.expiry_date) if doc.doctype == "Batch" else "N/A" }}</strong></div>
+            <div class="mrp">MRP: Rs. {{ mrp or "0.00" }}</div>
+        </div>
+        <div class="qr-col">
+            <!-- QR Placeholder -->
+            <div style="width: 12mm; height: 12mm; border: 1px solid #000; text-align: center; line-height: 12mm; font-size: 4pt; display: inline-block;">
+                [QR]
+            </div>
+        </div>
+    </div>
+    
+    <!-- Barcode Placeholder -->
+    <div class="barcode-container">
+        <div style="height: 5mm; width: 100%; border: 1px solid #000; font-size: 4pt; text-align: center; line-height: 5mm;">
+            {{ doc.name }}
+        </div>
+    </div>
+</div>

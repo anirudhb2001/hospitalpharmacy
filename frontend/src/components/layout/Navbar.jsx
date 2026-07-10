@@ -90,7 +90,10 @@ export const Navbar = ({ onOpenAuthModal }) => {
                   <span className="text-sm font-bold text-slate-700 max-w-[120px] truncate">{fullName}</span>
                 </Link>
                 <button
-                  onClick={logout}
+                  onClick={() => {
+                    useCartStore.getState().clearCart();
+                    logout();
+                  }}
                   className="w-12 h-12 rounded-2xl bg-rose-50 flex items-center justify-center hover:bg-rose-100 hover:text-rose-600 transition-colors group"
                   title="Logout"
                 >

@@ -24,8 +24,8 @@ def get_medicines(search="", category="", brand="", availability="", prescriptio
         
     order_map = {
         "name": "m.medicine_name ASC",
-        "price_asc": "m.selling_price ASC",
-        "price_desc": "m.selling_price DESC",
+        "price_asc": "i.standard_rate ASC",
+        "price_desc": "i.standard_rate DESC",
         "newest": "m.creation DESC",
     }
     order_by = order_map.get(sort, "m.medicine_name ASC")
@@ -46,10 +46,13 @@ def get_medicines(search="", category="", brand="", availability="", prescriptio
     query = f"""
         SELECT 
             m.name, m.medicine_name, m.generic_name, m.brand, m.category,
-            m.manufacturer, m.selling_price, m.mrp, m.status,
-            m.image, m.description, m.expiry_date, m.barcode, m.item,
-            IFNULL(SUM(b.actual_qty), 0) AS actual_qty
+            m.manufacturer, 
+            IFNULL((SELECT price_list_rate FROM `tabItem Price` WHERE item_code = m.item AND price_list='Standard Selling' LIMIT 1), i.standard_rate) AS selling_price, 
+            m.mrp, m.status,
+            m.image, i.description, m.expiry_date, m.barcode, m.item,
+            IFNULL(SUM(b.actual_qty), 0) - IFNULL(SUM(b.reserved_qty), 0) AS actual_qty
         FROM `tabMedicine` m
+        JOIN `tabItem` i ON m.item = i.name
         LEFT JOIN `tabBin` b ON m.item = b.item_code
         {where_clause}
         GROUP BY m.name
@@ -63,6 +66,7 @@ def get_medicines(search="", category="", brand="", availability="", prescriptio
         SELECT COUNT(*) FROM (
             SELECT m.name
             FROM `tabMedicine` m
+            JOIN `tabItem` i ON m.item = i.name
             LEFT JOIN `tabBin` b ON m.item = b.item_code
             {where_clause}
             GROUP BY m.name
@@ -114,8 +118,16 @@ def get_portal_stats():
 
 @frappe.whitelist(allow_guest=True)
 def get_medicine_details(name):
-    medicine = frappe.get_doc("Medicine", name)
-    return medicine.as_dict()
+    medicine = frappe.get_doc("Medicine", name).as_dict()
+    if medicine.get("item"):
+        item = frappe.get_doc("Item", medicine.get("item"))
+        
+        selling_price = frappe.db.get_value("Item Price", {"item_code": item.name, "price_list": "Standard Selling"}, "price_list_rate")
+        medicine["selling_price"] = selling_price or item.standard_rate
+        
+        medicine["purchase_price"] = item.valuation_rate
+        medicine["description"] = item.description
+    return medicine
 
 
 
@@ -163,10 +175,28 @@ def mark_all_notifications_read():
 # AUTH APIs
 # ─────────────────────────────────────────────────────────────
 
+import re
+
 @frappe.whitelist(allow_guest=True)
 def register_customer(full_name, email, phone, password):
+    from frappe.utils import validate_email_address
+    
+    validate_email_address(email, throw=True)
+    
+    if not re.match(r"^[6-9]\d{9}$", phone):
+        frappe.throw(_("Invalid mobile number."))
+        
+    if not re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$", password):
+        frappe.throw(_("Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character."))
+
     if frappe.db.exists("User", email):
         frappe.throw(_("A user with this email already exists."))
+
+    if frappe.db.exists("Customer", {"email_id": email}) or frappe.db.exists("Customer", {"mobile_no": phone}):
+        frappe.throw(_("A customer with this email or phone already exists."))
+
+    if frappe.db.exists("Customer", {"customer_name": full_name}):
+        frappe.throw(_("A customer with this name already exists."))
 
     user = frappe.get_doc({
         "doctype": "User",
@@ -176,22 +206,21 @@ def register_customer(full_name, email, phone, password):
         "send_welcome_email": 0,
     })
     user.flags.ignore_permissions = True
-    user.flags.ignore_password_policy = True
     user.insert()
 
-    if not frappe.db.exists("Customer", {"customer_name": full_name}):
-        customer = frappe.get_doc({
-            "doctype": "Customer",
-            "customer_name": full_name,
-            "customer_type": "Individual",
-            "customer_group": "Commercial",
-            "territory": "All Territories",
-            "mobile_no": phone,
-        })
-        customer.flags.ignore_permissions = True
-        customer.insert()
+    customer = frappe.get_doc({
+        "doctype": "Customer",
+        "customer_name": full_name,
+        "customer_type": "Individual",
+        "customer_group": "Commercial",
+        "territory": "All Territories",
+        "mobile_no": phone,
+        "email_id": email
+    })
+    customer.flags.ignore_permissions = True
+    customer.insert()
         
-    create_admin_notification("New Customer Registration", f"Customer {full_name} ({email}) has registered.", "Customer", customer.name if 'customer' in locals() else None)
+    create_admin_notification("New Customer Registration", f"Customer {full_name} ({email}) has registered.", "Customer", customer.name)
 
     frappe.db.commit()
     return {"status": "success", "message": "Registered successfully"}
@@ -203,6 +232,16 @@ def customer_login(email, password):
         login_manager = frappe.auth.LoginManager()
         login_manager.authenticate(user=email, pwd=password)
         login_manager.post_login()
+        
+        user_roles = frappe.get_roles(frappe.session.user)
+        admin_roles = [
+            "Administrator", "System Manager", "Hospital Administrator",
+            "Pharmacy Manager", "Pharmacist", "Cashier",
+        ]
+        if any(role in admin_roles for role in user_roles):
+            frappe.local.login_manager.logout()
+            frappe.throw(_("Unauthorized: Staff members cannot use the Customer Portal."))
+
         frappe.db.commit()
         user = frappe.get_doc("User", frappe.session.user)
         return {
@@ -247,17 +286,43 @@ def admin_login(email, password):
 # CHECKOUT API
 # ─────────────────────────────────────────────────────────────
 
-def get_fefo_batches(item_code, warehouse, required_qty):
+def get_fefo_batches(item_code, warehouse, required_qty, delivery_date=None):
+    """
+    ERPNext v15 stores batch tracking in Serial and Batch Bundle, not directly
+    on SLE.batch_no (deprecated field, populated only on cancel in legacy mode).
+    Query path: SLE -> Serial and Batch Bundle -> Serial and Batch Entry -> Batch.
+
+    If delivery_date is provided (YYYY-MM-DD string), only batches expiring
+    STRICTLY AFTER that date are returned (strict FEFO for future delivery).
+    Returns None if insufficient valid batch stock exists.
+    """
+    from frappe.utils import today as frappe_today
+
+    if delivery_date is None:
+        delivery_date = frappe_today()
+
     batches = frappe.db.sql("""
-        SELECT sle.batch_no, SUM(sle.actual_qty) as qty, b.expiry_date
+        SELECT
+            sabe.batch_no,
+            SUM(sabe.qty) AS qty,
+            b.expiry_date
         FROM `tabStock Ledger Entry` sle
-        JOIN `tabBatch` b ON sle.batch_no = b.name
-        WHERE sle.item_code = %s AND sle.warehouse = %s AND sle.is_cancelled=0
-        GROUP BY sle.batch_no, b.expiry_date
+        JOIN `tabSerial and Batch Bundle` sabb
+            ON sabb.name = sle.serial_and_batch_bundle
+            AND sabb.is_cancelled = 0
+        JOIN `tabSerial and Batch Entry` sabe
+            ON sabe.parent = sabb.name
+        JOIN `tabBatch` b ON b.name = sabe.batch_no
+        WHERE
+            sle.item_code = %s
+            AND sle.warehouse = %s
+            AND sle.is_cancelled = 0
+            AND b.expiry_date > %s
+        GROUP BY sabe.batch_no, b.expiry_date
         HAVING qty > 0
         ORDER BY b.expiry_date ASC
-    """, (item_code, warehouse), as_dict=True)
-    
+    """, (item_code, warehouse, delivery_date), as_dict=True)
+
     allocated = []
     remaining = required_qty
     for b in batches:
@@ -266,19 +331,21 @@ def get_fefo_batches(item_code, warehouse, required_qty):
         alloc_qty = min(remaining, b.qty)
         allocated.append({
             "batch_no": b.batch_no,
-            "qty": alloc_qty
+            "qty": alloc_qty,
+            "expiry_date": str(b.expiry_date)
         })
         remaining -= alloc_qty
-        
+
     if remaining > 0:
-        frappe.throw(f"Insufficient batch stock for {item_code}. Required {required_qty}, found {required_qty - remaining}")
-        
+        # Return None — let the caller emit a proper user-facing error.
+        return None
+
     return allocated
 
 @frappe.whitelist()
-def place_order(items, address, phone, notes, payment_method):
+def place_order(items=None, address=None, address_id=None, phone=None, notes=None, payment_method=None, quotation_id=None):
     try:
-        if isinstance(items, str):
+        if items and isinstance(items, str):
             import json
             items = json.loads(items)
             
@@ -306,46 +373,150 @@ def place_order(items, address, phone, notes, payment_method):
             customer_doc.insert(ignore_permissions=True)
             customer = customer_doc.name
                 
-        # Create Sales Order
-        so = frappe.new_doc("Sales Order")
-        so.customer = customer
-        so.delivery_date = frappe.utils.add_days(frappe.utils.today(), 1)
+        if quotation_id:
+            quot = frappe.get_doc("Quotation", quotation_id)
+            if quot.docstatus == 0:
+                quot.flags.ignore_permissions = True
+                quot.submit()
+            
+            from frappe.model.mapper import get_mapped_doc
+            so = frappe.get_doc(get_mapped_doc("Quotation", quotation_id, {
+                "Quotation": {
+                    "doctype": "Sales Order"
+                },
+                "Quotation Item": {
+                    "doctype": "Sales Order Item",
+                    "field_map": {
+                        "name": "quotation_item",
+                        "parent": "quotation_to"
+                    }
+                }
+            }, ignore_permissions=True))
+            
+            # Stock check and assign warehouse
+            for item in so.items:
+                actual_qty = 0
+                if item.warehouse:
+                    actual_qty = frappe.db.get_value("Bin", {"item_code": item.item_code, "warehouse": item.warehouse}, "actual_qty") or 0
+                    
+                if not item.warehouse or actual_qty < item.qty:
+                    warehouse_data = frappe.db.sql("""
+                        SELECT warehouse, actual_qty FROM tabBin
+                        WHERE item_code = %s AND actual_qty >= %s
+                        LIMIT 1
+                    """, (item.item_code, item.qty))
+                    
+                    if warehouse_data:
+                        item.warehouse = warehouse_data[0][0]
+                        actual_qty = warehouse_data[0][1]
+                    else:
+                        return {"status": "error", "message": f"Item {item.item_code} is out of stock."}
+            so.delivery_date = frappe.utils.add_days(frappe.utils.today(), 1)
+            so.customer = customer
+        else:
+            so = frappe.new_doc("Sales Order")
+            so.customer = customer
+            so.delivery_date = frappe.utils.add_days(frappe.utils.today(), 1)
+            
+            company = frappe.defaults.get_user_default("Company") or frappe.db.get_value("Company", None, "name")
+            so.company = company
+            
+            for item in (items or []):
+                item_code = item.get("item_code")
+                qty = item.get("qty")
+                
+                # Stock check
+                warehouse_data = frappe.db.sql("""
+                    SELECT warehouse, actual_qty FROM tabBin
+                    WHERE item_code = %s AND actual_qty >= %s
+                    LIMIT 1
+                """, (item_code, qty))
+                
+                warehouse = warehouse_data[0][0] if warehouse_data else None
+                actual_qty = warehouse_data[0][1] if warehouse_data else 0
+                
+                if not warehouse:
+                    create_admin_notification("Out of Stock Warning", f"Attempted to order {qty} of {item_code} but it is out of stock.", priority="Alert")
+                    return {"status": "error", "message": f"Item {item_code} is out of stock."}
+                elif (actual_qty - qty) <= 10:
+                    create_admin_notification("Low Stock Alert", f"Item {item_code} stock will drop to {actual_qty - qty} after this order.", priority="Warning")
+                
+                so.append("items", {
+                    "item_code": item_code,
+                    "qty": qty,
+                    "rate": item.get("rate"),
+                    "warehouse": warehouse
+                })
         
-        company = frappe.defaults.get_user_default("Company") or frappe.db.get_value("Company", None, "name")
-        so.company = company
-        
+        if address_id:
+            so.customer_address = address_id
+            # Build address string for comment backwards compatibility
+            addr_doc = frappe.get_doc("Address", address_id)
+            address = f"{addr_doc.address_line1}\\n{addr_doc.address_line2 or ''}\\n{addr_doc.city}, {addr_doc.state or ''} {addr_doc.pincode or ''}".strip()
+            if not phone and addr_doc.phone:
+                phone = addr_doc.phone
+                
+        if address_id:
+            so.customer_address = address_id
+            addr_doc = frappe.get_doc("Address", address_id)
+            address = f"{addr_doc.address_line1}\\n{addr_doc.address_line2 or ''}\\n{addr_doc.city}, {addr_doc.state or ''} {addr_doc.pincode or ''}".strip()
+            if not phone and addr_doc.phone:
+                phone = addr_doc.phone
+                
         so.add_comment("Comment", f"Delivery Address: {address}\\nPhone: {phone}\\nNotes: {notes}\\nPayment: {payment_method}")
-        
-        for item in items:
-            item_code = item.get("item_code")
-            qty = item.get("qty")
-            
-            # Stock check
-            warehouse_data = frappe.db.sql("""
-                SELECT warehouse, actual_qty FROM tabBin
-                WHERE item_code = %s AND actual_qty >= %s
-                LIMIT 1
-            """, (item_code, qty))
-            
-            warehouse = warehouse_data[0][0] if warehouse_data else None
-            actual_qty = warehouse_data[0][1] if warehouse_data else 0
-            
-            if not warehouse:
-                create_admin_notification("Out of Stock Warning", f"Attempted to order {qty} of {item_code} but it is out of stock.", priority="Alert")
-                return {"status": "error", "message": f"Item {item_code} is out of stock."}
-            elif (actual_qty - qty) <= 10:
-                create_admin_notification("Low Stock Alert", f"Item {item_code} stock will drop to {actual_qty - qty} after this order.", priority="Warning")
-            
-            so.append("items", {
-                "item_code": item_code,
-                "qty": qty,
-                "rate": item.get("rate"),
-                "warehouse": warehouse
-            })
             
         so.flags.ignore_permissions = True
         so.insert()
         so.submit()
+        
+        # Save phone if missing
+        if phone:
+            current_phone = frappe.db.get_value("Customer", customer, "mobile_no")
+            if not current_phone:
+                frappe.db.set_value("Customer", customer, "mobile_no", phone)
+                
+        # Save or update address only if address_id was not used
+        if address and not address_id:
+            lines = [l.strip() for l in address.split('\n') if l.strip()]
+            new_line1 = lines[0] if lines else address[:140]
+            new_city = lines[1] if len(lines) > 1 else "Unknown"
+            import re
+            pincode_match = re.search(r'\b\d{7}\b', address)
+            new_pincode = pincode_match.group() if pincode_match else ""
+
+            existing_links = frappe.db.sql("""
+                SELECT parent FROM `tabDynamic Link`
+                WHERE link_doctype='Customer' AND link_name=%s AND parenttype='Address'
+            """, (customer,))
+            
+            if existing_links:
+                address_names = [r[0] for r in existing_links]
+                primary_address_name = frappe.db.get_value("Address", {"name": ["in", address_names], "is_primary_address": 1}, "name")
+                
+                addr_doc = frappe.get_doc("Address", primary_address_name or address_names[0])
+                addr_doc.address_line1 = new_line1
+                addr_doc.city = new_city
+                if new_pincode: addr_doc.pincode = new_pincode
+                addr_doc.phone = phone
+                addr_doc.is_primary_address = 1
+                addr_doc.flags.ignore_permissions = True
+                addr_doc.save()
+            else:
+                new_address = frappe.new_doc("Address")
+                customer_name = frappe.db.get_value("Customer", customer, "customer_name")
+                new_address.address_title = f"{customer_name} - Home"
+                new_address.address_type = "Shipping"
+                new_address.address_line1 = new_line1
+                new_address.city = new_city
+                if new_pincode: new_address.pincode = new_pincode
+                new_address.phone = phone
+                new_address.is_primary_address = 1
+                new_address.append("links", {
+                    "link_doctype": "Customer",
+                    "link_name": customer
+                })
+                new_address.flags.ignore_permissions = True
+                new_address.insert()
         
         create_admin_notification("New Sales Order", f"New Sales Order {so.name} placed by {customer}.", "Sales Order", so.name, priority="Info")
         
@@ -375,7 +546,14 @@ def place_order(items, address, phone, notes, payment_method):
                 for item in original_items:
                     has_batch = frappe.db.get_value("Item", item.item_code, "has_batch_no")
                     if has_batch:
-                        allocated = get_fefo_batches(item.item_code, item.warehouse, item.qty)
+                        delivery_date = str(si.posting_date or frappe.utils.today())
+                        allocated = get_fefo_batches(item.item_code, item.warehouse, item.qty, delivery_date)
+                        if allocated is None:
+                            frappe.throw(
+                                f"No valid batch available for <b>{item.item_name or item.item_code}</b> "
+                                f"that expires after the invoice date <b>{delivery_date}</b>. "
+                                f"Please contact the pharmacy to check batch availability."
+                            )
                         for alloc in allocated:
                             item_dict = item.as_dict()
                             item_dict.update({
@@ -530,3 +708,326 @@ def get_customer_orders():
                 o["order_status"] = "Confirmed"
                 
     return {"status": "success", "orders": orders}
+
+# ─────────────────────────────────────────────────────────────
+# CART & QUOTATION API
+# ─────────────────────────────────────────────────────────────
+
+@frappe.whitelist()
+def sync_cart(items=None):
+    if isinstance(items, str):
+        import json
+        items = json.loads(items)
+        
+    user = frappe.session.user
+    if user == "Guest":
+        return {"status": "error", "message": "Must be logged in"}
+        
+    customer = frappe.db.get_value("Customer", {"email_id": user}, "name")
+    if not customer:
+        user_doc = frappe.get_doc("User", user)
+        customer = frappe.db.get_value("Customer", {"customer_name": user_doc.full_name}, "name")
+        
+    if not customer:
+        return {"status": "error", "message": "Customer not found"}
+        
+    # Find existing draft quotation
+    quotation_name = frappe.db.get_value("Quotation", {"party_name": customer, "docstatus": 0}, "name")
+    
+    is_new = False
+    if quotation_name:
+        quotation = frappe.get_doc("Quotation", quotation_name)
+    else:
+        quotation = frappe.new_doc("Quotation")
+        quotation.quotation_to = "Customer"
+        quotation.party_name = customer
+        company = frappe.defaults.get_user_default("Company") or frappe.db.get_value("Company", None, "name")
+        quotation.company = company
+        quotation.order_type = "Sales"
+        quotation.currency = frappe.db.get_value("Company", company, "default_currency") or "INR"
+        is_new = True
+
+    if items is not None:
+        # Replace items entirely based on frontend state
+        quotation.set("items", [])
+        for item in items:
+            item_code = item.get("item_code")
+            qty = item.get("qty")
+            
+            rate = frappe.db.get_value("Item Price", {"item_code": item_code, "price_list": "Standard Selling"}, "price_list_rate")
+            if not rate:
+                rate = frappe.db.get_value("Item", item_code, "standard_rate") or 0.0
+            
+            quotation.append("items", {
+                "item_code": item_code,
+                "qty": qty,
+                "rate": rate,
+            })
+            
+        if is_new:
+            if len(quotation.get("items", [])) > 0:
+                quotation.insert(ignore_permissions=True)
+        else:
+            quotation.save(ignore_permissions=True)
+        
+    # Return formatted cart for frontend
+    cart_items = []
+    for item in quotation.items:
+        medicine = frappe.db.get_value("Medicine", {"item": item.item_code}, ["name", "medicine_name", "image"], as_dict=True)
+        if medicine:
+            # Calculate Available to Promise stock for the cart
+            actual_qty = frappe.db.sql("""
+                SELECT IFNULL(SUM(actual_qty), 0) - IFNULL(SUM(reserved_qty), 0)
+                FROM `tabBin` WHERE item_code = %s
+            """, item.item_code)[0][0] or 0
+
+            cart_items.append({
+                "medicine": {
+                    "name": medicine.name,
+                    "medicine_name": medicine.medicine_name,
+                    "item_code": item.item_code,
+                    "selling_price": item.rate,
+                    "image": medicine.image,
+                    "available_stock": float(actual_qty)
+                },
+                "quantity": item.qty
+            })
+            
+    return {"status": "success", "cart_items": cart_items, "quotation": quotation.name}
+
+
+@frappe.whitelist()
+def buy_now(item_code, qty):
+    user = frappe.session.user
+    if user == "Guest":
+        return {"status": "error", "message": "Must be logged in to use Buy Now"}
+        
+    customer = frappe.db.get_value("Customer", {"email_id": user}, "name")
+    if not customer:
+        user_doc = frappe.get_doc("User", user)
+        customer = frappe.db.get_value("Customer", {"customer_name": user_doc.full_name}, "name")
+        
+    if not customer:
+        return {"status": "error", "message": "Customer not found"}
+        
+    quotation = frappe.new_doc("Quotation")
+    quotation.quotation_to = "Customer"
+    quotation.party_name = customer
+    company = frappe.defaults.get_user_default("Company") or frappe.db.get_value("Company", None, "name")
+    quotation.company = company
+    quotation.currency = frappe.db.get_value("Company", company, "default_currency") or "INR"
+    quotation.order_type = "Sales"
+    
+    rate = frappe.db.get_value("Item Price", {"item_code": item_code, "price_list": "Standard Selling"}, "price_list_rate")
+    if not rate:
+        rate = frappe.db.get_value("Item", item_code, "standard_rate") or 0.0
+        
+    quotation.append("items", {
+        "item_code": item_code,
+        "qty": qty,
+        "rate": rate,
+    })
+    quotation.insert(ignore_permissions=True)
+    
+    return {"status": "success", "quotation": quotation.name}
+
+
+def validate_batch_expiry(doc, method):
+    from frappe.utils import getdate, today
+    for item in doc.items:
+        if item.batch_no:
+            expiry_date = frappe.db.get_value("Batch", item.batch_no, "expiry_date")
+            if expiry_date and getdate(expiry_date) < getdate(today()):
+                frappe.throw(f"Batch {item.batch_no} for item {item.item_name} has expired on {expiry_date}. You cannot sell expired medicine.")
+
+def sync_item_to_medicine(doc, method):
+    if frappe.flags.in_medicine_sync:
+        return
+        
+    if doc.item_group != "Medicine":
+        return
+        
+    medicine_name = frappe.db.get_value("Medicine", {"item": doc.name}, "name")
+    
+    frappe.flags.in_item_sync = True
+    try:
+        selling_price = frappe.db.get_value("Item Price", {"item_code": doc.name, "price_list": "Standard Selling"}, "price_list_rate") or doc.standard_rate
+        
+        if not medicine_name:
+            med = frappe.new_doc("Medicine")
+            med.item = doc.name
+            med.medicine_name = doc.item_name
+            med.unit = doc.stock_uom or "Nos"
+            med.status = "Active" if not doc.disabled else "Inactive"
+            med.description = doc.description
+            if selling_price: med.selling_price = selling_price
+            if doc.valuation_rate: med.purchase_price = doc.valuation_rate
+            med.insert(ignore_permissions=True, ignore_mandatory=True)
+        else:
+            med = frappe.get_doc("Medicine", medicine_name)
+            med.medicine_name = doc.item_name
+            med.unit = doc.stock_uom or "Nos"
+            med.status = "Active" if not doc.disabled else "Inactive"
+            med.description = doc.description
+            if selling_price: med.selling_price = selling_price
+            if doc.valuation_rate: med.purchase_price = doc.valuation_rate
+            med.save(ignore_permissions=True)
+    finally:
+        frappe.flags.in_item_sync = False
+
+def sync_item_price_to_medicine(doc, method):
+    if doc.price_list == "Standard Selling":
+        medicine_name = frappe.db.get_value("Medicine", {"item": doc.item_code}, "name")
+        if medicine_name:
+            frappe.flags.in_item_sync = True
+            try:
+                frappe.db.set_value("Medicine", medicine_name, "selling_price", doc.price_list_rate)
+            finally:
+                frappe.flags.in_item_sync = False
+
+# ─────────────────────────────────────────────────────────────
+# ADDRESS API
+# ─────────────────────────────────────────────────────────────
+
+@frappe.whitelist()
+def get_customer_addresses():
+    user = frappe.session.user
+    if user == "Guest":
+        return {"status": "error", "message": "Must be logged in"}
+        
+    customer = frappe.db.get_value("Customer", {"email_id": user}, "name")
+    if not customer:
+        user_doc = frappe.get_doc("User", user)
+        customer = frappe.db.get_value("Customer", {"customer_name": user_doc.full_name}, "name")
+    if not customer:
+        return {"status": "error", "message": "Customer not found"}
+        
+    addresses = frappe.get_all(
+        "Dynamic Link", 
+        filters={"link_doctype": "Customer", "link_name": customer, "parenttype": "Address"}, 
+        pluck="parent"
+    )
+    
+    mobile_no = frappe.db.get_value("Customer", customer, "mobile_no")
+    
+    if not addresses:
+        return {"status": "success", "addresses": [], "mobile_no": mobile_no}
+        
+    address_docs = frappe.get_all(
+        "Address",
+        filters={"name": ["in", addresses]},
+        fields=["name", "address_title", "address_line1", "address_line2", "city", "state", "pincode", "is_primary_address", "phone"],
+        order_by="is_primary_address desc"
+    )
+    return {"status": "success", "addresses": address_docs, "mobile_no": mobile_no}
+
+@frappe.whitelist()
+def create_address(address_title="", address_line1="", address_line2="", city="", state="", country="", pincode="", phone="", is_primary_address=0):
+    user = frappe.session.user
+    if user == "Guest": return {"status": "error", "message": "Must be logged in"}
+    customer = frappe.db.get_value("Customer", {"email_id": user}, "name")
+    if not customer:
+        user_doc = frappe.get_doc("User", user)
+        customer = frappe.db.get_value("Customer", {"customer_name": user_doc.full_name}, "name")
+    if not customer: return {"status": "error", "message": "Customer not found"}
+        
+    if int(is_primary_address) == 1:
+        # unset others
+        frappe.db.sql("""UPDATE `tabAddress` a JOIN `tabDynamic Link` l ON a.name=l.parent 
+                         SET a.is_primary_address=0 
+                         WHERE l.link_doctype='Customer' AND l.link_name=%s""", (customer,))
+                         
+    address = frappe.new_doc("Address")
+    address.address_title = address_title or frappe.db.get_value("Customer", customer, "customer_name")
+    address.address_type = "Shipping"
+    address.address_line1 = address_line1
+    address.address_line2 = address_line2
+    address.city = city
+    address.state = state
+    address.country = country
+    address.pincode = pincode
+    address.phone = phone
+    address.is_primary_address = int(is_primary_address)
+    address.append("links", {"link_doctype": "Customer", "link_name": customer})
+    address.insert(ignore_permissions=True)
+    return {"status": "success", "address_id": address.name}
+
+@frappe.whitelist()
+def update_address(address_id, address_title="", address_line1="", address_line2="", city="", state="", country="", pincode="", phone="", is_primary_address=0):
+    user = frappe.session.user
+    if user == "Guest": return {"status": "error", "message": "Must be logged in"}
+    customer = frappe.db.get_value("Customer", {"email_id": user}, "name")
+    if not customer:
+        user_doc = frappe.get_doc("User", user)
+        customer = frappe.db.get_value("Customer", {"customer_name": user_doc.full_name}, "name")
+    if not customer: return {"status": "error", "message": "Customer not found"}
+    
+    # verify ownership
+    exists = frappe.db.exists("Dynamic Link", {"parent": address_id, "link_doctype": "Customer", "link_name": customer})
+    if not exists: return {"status": "error", "message": "Address not found or unauthorized"}
+    
+    if int(is_primary_address) == 1:
+        frappe.db.sql("""UPDATE `tabAddress` a JOIN `tabDynamic Link` l ON a.name=l.parent 
+                         SET a.is_primary_address=0 
+                         WHERE l.link_doctype='Customer' AND l.link_name=%s""", (customer,))
+                         
+    doc = frappe.get_doc("Address", address_id)
+    if address_title: doc.address_title = address_title
+    if address_line1: doc.address_line1 = address_line1
+    if address_line2 is not None: doc.address_line2 = address_line2
+    if city: doc.city = city
+    if state is not None: doc.state = state
+    if country is not None: doc.country = country
+    if pincode is not None: doc.pincode = pincode
+    if phone is not None: doc.phone = phone
+    doc.is_primary_address = int(is_primary_address)
+    doc.save(ignore_permissions=True)
+    return {"status": "success"}
+
+@frappe.whitelist()
+def delete_address(address_id):
+    user = frappe.session.user
+    if user == "Guest": return {"status": "error", "message": "Must be logged in"}
+    customer = frappe.db.get_value("Customer", {"email_id": user}, "name")
+    if not customer:
+        user_doc = frappe.get_doc("User", user)
+        customer = frappe.db.get_value("Customer", {"customer_name": user_doc.full_name}, "name")
+    if not customer: return {"status": "error", "message": "Customer not found"}
+    
+    exists = frappe.db.exists("Dynamic Link", {"parent": address_id, "link_doctype": "Customer", "link_name": customer})
+    if not exists: return {"status": "error", "message": "Address not found or unauthorized"}
+    
+    frappe.delete_doc("Address", address_id, ignore_permissions=True)
+    return {"status": "success"}
+
+@frappe.whitelist()
+def set_default_address(address_id):
+    user = frappe.session.user
+    if user == "Guest": return {"status": "error", "message": "Must be logged in"}
+    customer = frappe.db.get_value("Customer", {"email_id": user}, "name")
+    if not customer:
+        user_doc = frappe.get_doc("User", user)
+        customer = frappe.db.get_value("Customer", {"customer_name": user_doc.full_name}, "name")
+    if not customer: return {"status": "error", "message": "Customer not found"}
+    
+    exists = frappe.db.exists("Dynamic Link", {"parent": address_id, "link_doctype": "Customer", "link_name": customer})
+    if not exists: return {"status": "error", "message": "Address not found or unauthorized"}
+    
+    frappe.db.sql("""UPDATE `tabAddress` a JOIN `tabDynamic Link` l ON a.name=l.parent 
+                     SET a.is_primary_address=0 
+                     WHERE l.link_doctype='Customer' AND l.link_name=%s""", (customer,))
+    frappe.db.set_value("Address", address_id, "is_primary_address", 1)
+    return {"status": "success"}
+
+@frappe.whitelist()
+def update_customer_profile(phone):
+    user = frappe.session.user
+    if user == "Guest": return {"status": "error", "message": "Must be logged in"}
+    customer = frappe.db.get_value("Customer", {"email_id": user}, "name")
+    if not customer:
+        user_doc = frappe.get_doc("User", user)
+        customer = frappe.db.get_value("Customer", {"customer_name": user_doc.full_name}, "name")
+    if not customer: return {"status": "error", "message": "Customer not found"}
+    
+    frappe.db.set_value("Customer", customer, "mobile_no", phone)
+    return {"status": "success"}

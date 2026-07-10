@@ -32,6 +32,7 @@ export const ProductCard = ({ medicine, onAddToCart, onBuyNow, onViewDetails }) 
                 {medicine.medicine_name}
               </h3>
               <p className="text-sm font-medium text-slate-500 mt-1 truncate">{medicine.generic_name || 'Generic Medicine'}</p>
+              <p className="text-sm font-medium text-slate-500 mt-1 truncate">{medicine.brand || 'Brand Medicine'}</p>    
             </div>
           </div>
           
